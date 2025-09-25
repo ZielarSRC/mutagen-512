@@ -19,6 +19,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <limits>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -57,7 +58,7 @@ class SmartMutagenLogger {
       logFile << "========== MUTAGEN ALGORITHM ANALYSIS ==========" << std::endl;
       logFile << "Start Time: " << getCurrentTimestamp() << std::endl;
       logFile << "Purpose: Understand how bit flipping mutation works" << std::endl;
-      logFile << "=================================================" << std::endl;
+      logFile << "================================================" << std::endl;
       logFile.flush();
     }
   }
@@ -81,28 +82,22 @@ class SmartMutagenLogger {
                               const std::vector<int>& flips, const std::string& mutatedKey,
                               uint64_t combinationIndex) {
     std::lock_guard<std::mutex> lock(logMutex);
-    if (logFile.is_open()) {
-      logFile << "\n" << getCurrentTimestamp() << "=== KEY MUTATION STEP ===" << std::endl;
-      logFile << "Thread: " << threadId << " | Combination #" << combinationIndex << std::endl;
-      logFile << "Base Key (hex): " << baseKey << std::endl;
-      logFile << "Base Key (dec): " << std::stoull(baseKey, nullptr, 16) << std::endl;
-      logFile << "Bit positions to flip: [";
-      for (size_t i = 0; i < flips.size(); ++i) {
-        logFile << flips[i];
-        if (i < flips.size() - 1) logFile << ", ";
-      }
-      logFile << "]" << std::endl;
-      logFile << "After flipping bits: " << mutatedKey << std::endl;
-      logFile << "Mutated Key (dec): " << std::stoull(mutatedKey, nullptr, 16) << std::endl;
-
-      // Show which bits changed
-      uint64_t baseVal = std::stoull(baseKey, nullptr, 16);
-      uint64_t mutatedVal = std::stoull(mutatedKey, nullptr, 16);
-      uint64_t diff = baseVal ^ mutatedVal;
-      logFile << "XOR difference: 0x" << std::hex << diff << std::dec << std::endl;
-      logFile << "=========================" << std::endl;
-      logFile.flush();
+    if (!logFile.is_open()) {
+      return;
     }
+
+    logFile << "\n" << getCurrentTimestamp() << "=== KEY MUTATION STEP ===" << std::endl;
+    logFile << "Thread: " << threadId << " | Combination #" << combinationIndex << std::endl;
+    logFile << "Base Key (hex): " << baseKey << std::endl;
+    logFile << "Bit positions to flip: [";
+    for (size_t i = 0; i < flips.size(); ++i) {
+      logFile << flips[i];
+      if (i < flips.size() - 1) logFile << ", ";
+    }
+    logFile << "]" << std::endl;
+    logFile << "After flipping bits: " << mutatedKey << std::endl;
+    logFile << "=========================" << std::endl;
+    logFile.flush();
   }
 
   void logAlgorithmStep(const std::string& step, const std::string& explanation) {
@@ -165,7 +160,7 @@ class SmartMutagenLogger {
       if (logFile.is_open()) {
         double progress = (double)totalChecked / totalCombinations * 100.0;
         logFile << getCurrentTimestamp() << "[PROGRESS] " << totalChecked << "/"
-                << total_combinations << " (" << std::fixed << std::setprecision(2) << progress
+                << totalCombinations << " (" << std::fixed << std::setprecision(2) << progress
                 << "%) "
                 << "Speed: " << speed << " Mkeys/s" << std::endl;
         logFile.flush();
@@ -349,8 +344,6 @@ __uint128_t total_combinations = 0;
 vector<string> g_threadPrivateKeys;
 mutex progress_mutex;
 
-atomic<uint64_t> globalComparedCount(0);
-atomic<uint64_t> localComparedCount(0);
 double globalElapsedTime = 0.0;
 double mkeysPerSec = 0.0;
 chrono::time_point<chrono::high_resolution_clock> tStart;
@@ -376,6 +369,30 @@ static std::string to_string_128(__uint128_t value) {
   }
 
   return std::string(p);
+}
+
+static long double to_long_double(__uint128_t value) {
+  constexpr long double TWO_POW_64 = 18446744073709551616.0L;
+  uint64_t low = static_cast<uint64_t>(value);
+  uint64_t high = static_cast<uint64_t>(value >> 64);
+  return static_cast<long double>(high) * TWO_POW_64 + static_cast<long double>(low);
+}
+
+static uint64_t clamp_to_uint64(__uint128_t value) {
+  constexpr __uint128_t MAX64 = static_cast<__uint128_t>(std::numeric_limits<uint64_t>::max());
+  if (value > MAX64) {
+    return std::numeric_limits<uint64_t>::max();
+  }
+  return static_cast<uint64_t>(value);
+}
+
+static double calculate_mkeys_per_sec(__uint128_t checked, double seconds) {
+  if (seconds <= 1e-12) {
+    return 0.0;
+  }
+  long double total = to_long_double(checked);
+  long double rate = total / seconds / 1'000'000.0L;
+  return static_cast<double>(rate);
 }
 
 void signalHandler(int signum) {
@@ -575,9 +592,6 @@ void worker(Secp256K1* secp, int bit_length, int flip_count, int threadId, AVXCo
   AVXCounter count;
   count.store(start.load());
 
-  uint64_t actual_work_done = 0;
-  auto last_report = chrono::high_resolution_clock::now();
-
   while (!stop_event.load() && count < end) {
     Int currentKey;
     currentKey.Set(&BASE_KEY);
@@ -690,9 +704,6 @@ void worker(Secp256K1* secp, int bit_length, int flip_count, int threadId, AVXCo
       if (localBatchCount == HASH_BATCH_SIZE) {
         computeHash160BatchBinSingle(localBatchCount, localPubKeys, localHashResults);
 
-        actual_work_done += HASH_BATCH_SIZE;
-        localComparedCount += HASH_BATCH_SIZE;
-
         for (int j = 0; j < HASH_BATCH_SIZE; j++) {
           __m256i cand = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(localHashResults[j]));
 
@@ -714,8 +725,10 @@ void worker(Secp256K1* secp, int bit_length, int flip_count, int threadId, AVXCo
 
               {
                 lock_guard<mutex> lock(progress_mutex);
-                globalComparedCount += actual_work_done;
-                mkeysPerSec = (double)globalComparedCount / globalElapsedTime / 1e6;
+                __uint128_t processed_combinations = total_checked_avx.load();
+                __uint128_t processed_keys =
+                    (processed_combinations + 1) * static_cast<__uint128_t>(HASH_BATCH_SIZE);
+                mkeysPerSec = calculate_mkeys_per_sec(processed_keys, globalElapsedTime);
               }
 
               Int foundKey;
@@ -741,14 +754,20 @@ void worker(Secp256K1* secp, int bit_length, int flip_count, int threadId, AVXCo
                 hashHex << std::setw(2) << (int)localHashResults[j][k];
               }
 
+              __uint128_t processed_combinations = total_checked_avx.load() + 1;
+              __uint128_t processed_keys =
+                  processed_combinations * static_cast<__uint128_t>(HASH_BATCH_SIZE);
+
               // LOG SOLUTION WITH ANALYSIS
               if (g_smart_logger) {
-                g_smart_logger->logSolutionAnalysis(hexKey, hashHex.str(), total_checked_avx.load(),
+                g_smart_logger->logSolutionAnalysis(hexKey, hashHex.str(),
+                                                    clamp_to_uint64(processed_combinations),
                                                     flips);
               }
 
               lock_guard<mutex> lock(result_mutex);
-              results.push(make_tuple(hexKey, total_checked_avx.load(), flip_count, flips));
+              results.push(
+                  make_tuple(hexKey, processed_combinations, flip_count, flips));
               stop_event.store(true);
               return;
             }
@@ -758,30 +777,39 @@ void worker(Secp256K1* secp, int bit_length, int flip_count, int threadId, AVXCo
         total_checked_avx.increment();
         localBatchCount = 0;
 
-        __uint128_t current_total = total_checked_avx.load();
-        if (current_total % REPORT_INTERVAL == 0 || count.load() == end.load() - 1) {
+        __uint128_t current_combinations = total_checked_avx.load();
+        __uint128_t current_keys =
+            current_combinations * static_cast<__uint128_t>(HASH_BATCH_SIZE);
+        if ((current_combinations != 0 &&
+             current_combinations % REPORT_INTERVAL == 0) ||
+            count.load() == end.load() - 1) {
           auto now = chrono::high_resolution_clock::now();
           globalElapsedTime = chrono::duration<double>(now - tStart).count();
 
-          globalComparedCount += localComparedCount;
-          localComparedCount = 0;
-          mkeysPerSec = (double)globalComparedCount / globalElapsedTime / 1e6;
-          double progress = min(100.0, (double)current_total / total_combinations * 100.0);
+          mkeysPerSec = calculate_mkeys_per_sec(current_keys, globalElapsedTime);
+          double progress = 0.0;
+          if (total_combinations > 0) {
+            long double ratio = to_long_double(current_combinations) /
+                                to_long_double(total_combinations);
+            progress = static_cast<double>(min(100.0L, ratio * 100.0L));
+          }
 
           // LOG PROGRESS
           if (g_smart_logger) {
-            g_smart_logger->logProgress(globalComparedCount, total_combinations, mkeysPerSec);
+            g_smart_logger->logProgress(clamp_to_uint64(current_combinations),
+                                        clamp_to_uint64(total_combinations), mkeysPerSec);
           }
 
           lock_guard<mutex> lock(progress_mutex);
           moveCursorTo(0, 10);
           cout << "Progress: " << fixed << setprecision(6) << progress << "%\n";
-          cout << "Processed: " << to_string_128(current_total) << "\n";
+          cout << "Processed combinations: " << to_string_128(current_combinations) << "\n";
+          cout << "Candidate keys hashed: " << to_string_128(current_keys) << "\n";
           cout << "Speed: " << fixed << setprecision(2) << mkeysPerSec << " Mkeys/s\n";
           cout << "Elapsed Time: " << formatElapsedTime(globalElapsedTime) << "\n";
           cout.flush();
 
-          if (current_total >= total_combinations) {
+          if (current_combinations >= total_combinations) {
             stop_event.store(true);
             break;
           }
@@ -982,10 +1010,12 @@ int main(int argc, char* argv[]) {
   }
 
   if (!results.empty()) {
-    auto [hex_key, checked, flips, solution_flips] = results.front();
+    auto [hex_key, checked_combinations, flips, solution_flips] = results.front();
     globalElapsedTime =
         chrono::duration<double>(chrono::high_resolution_clock::now() - tStart).count();
-    mkeysPerSec = (double)globalComparedCount / globalElapsedTime / 1e6;
+    __uint128_t processed_keys =
+        checked_combinations * static_cast<__uint128_t>(HASH_BATCH_SIZE);
+    mkeysPerSec = calculate_mkeys_per_sec(processed_keys, globalElapsedTime);
 
     string compactHex = hex_key;
     size_t firstNonZeroCompact = compactHex.find_first_not_of('0');
@@ -1001,7 +1031,8 @@ int main(int argc, char* argv[]) {
     cout << "=========== SOLUTION FOUND ============\n";
     cout << "=======================================\n";
     cout << "Private key: " << compactHex << "\n";
-    cout << "Checked " << to_string_128(checked) << " combinations\n";
+    cout << "Checked " << to_string_128(checked_combinations) << " combinations\n";
+    cout << "Candidate keys hashed: " << to_string_128(processed_keys) << "\n";
     cout << "Bit flips: " << flips << endl;
     cout << "Time: " << fixed << setprecision(2) << globalElapsedTime << " seconds ("
          << formatElapsedTime(globalElapsedTime) << ")\n";
@@ -1016,16 +1047,16 @@ int main(int argc, char* argv[]) {
       cerr << "Failed to save solution to file!\n";
     }
   } else {
-    __uint128_t final_count = total_checked_avx.load();
+    __uint128_t final_combinations = total_checked_avx.load();
+    __uint128_t final_keys =
+        final_combinations * static_cast<__uint128_t>(HASH_BATCH_SIZE);
     globalElapsedTime =
         chrono::duration<double>(chrono::high_resolution_clock::now() - tStart).count();
 
-    if (globalElapsedTime > 1e-6) {
-      mkeysPerSec = (double)globalComparedCount / globalElapsedTime / 1e6;
-    } else {
-      mkeysPerSec = 0.0;
-    }
-    cout << "\n\nNo solution found. Checked " << to_string_128(final_count) << " combinations\n";
+    mkeysPerSec = calculate_mkeys_per_sec(final_keys, globalElapsedTime);
+    cout << "\n\nNo solution found. Checked " << to_string_128(final_combinations)
+         << " combinations\n";
+    cout << "Candidate keys hashed: " << to_string_128(final_keys) << "\n";
     cout << "Time: " << fixed << setprecision(2) << globalElapsedTime << " seconds ("
          << formatElapsedTime(globalElapsedTime) << ")\n";
     cout << "Speed: " << fixed << setprecision(2) << mkeysPerSec << " Mkeys/s\n";
