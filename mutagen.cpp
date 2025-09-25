@@ -28,8 +28,8 @@
 #include "IntGroup.h"
 #include "Point.h"
 #include "SECP256K1.h"
-#include "ripemd160_avx2.h"
-#include "sha256_avx2.h"
+#include "ripemd160_avx512.h"
+#include "sha256_avx512.h"
 
 using namespace std;
 
@@ -165,8 +165,9 @@ class SmartMutagenLogger {
       if (logFile.is_open()) {
         double progress = (double)totalChecked / totalCombinations * 100.0;
         logFile << getCurrentTimestamp() << "[PROGRESS] " << totalChecked << "/"
-                << totalCombinations << " (" << std::fixed << std::setprecision(2) << progress
-                << "%) " << "Speed: " << speed << " Mkeys/s" << std::endl;
+                << total_combinations << " (" << std::fixed << std::setprecision(2) << progress
+                << "%) "
+                << "Speed: " << speed << " Mkeys/s" << std::endl;
         logFile.flush();
       }
     }
@@ -216,7 +217,7 @@ int WORKERS = omp_get_num_procs();
 int FLIP_COUNT = -1;
 const __uint128_t REPORT_INTERVAL = 10000000;
 static constexpr int POINTS_BATCH_SIZE = 256;
-static constexpr int HASH_BATCH_SIZE = 8;
+static constexpr int HASH_BATCH_SIZE = 16;
 
 const unordered_map<int, tuple<int, string, string>> PUZZLE_DATA = {
     {20, {8, "b907c3a2a3b27789dfb509b730dd47703c272868", "357535"}},
@@ -479,10 +480,10 @@ inline void prepareRipemdBlock(const uint8_t* dataSrc, uint8_t* outBlock) {
 
 static void computeHash160BatchBinSingle(int numKeys, uint8_t pubKeys[][33],
                                          uint8_t hashResults[][20]) {
-  alignas(32) std::array<std::array<uint8_t, 64>, HASH_BATCH_SIZE> shaInputs;
-  alignas(32) std::array<std::array<uint8_t, 32>, HASH_BATCH_SIZE> shaOutputs;
-  alignas(32) std::array<std::array<uint8_t, 64>, HASH_BATCH_SIZE> ripemdInputs;
-  alignas(32) std::array<std::array<uint8_t, 20>, HASH_BATCH_SIZE> ripemdOutputs;
+  alignas(64) std::array<std::array<uint8_t, 64>, HASH_BATCH_SIZE> shaInputs;
+  alignas(64) std::array<std::array<uint8_t, 32>, HASH_BATCH_SIZE> shaOutputs;
+  alignas(64) std::array<std::array<uint8_t, 64>, HASH_BATCH_SIZE> ripemdInputs;
+  alignas(64) std::array<std::array<uint8_t, 20>, HASH_BATCH_SIZE> ripemdOutputs;
   const __uint128_t totalBatches = (numKeys + (HASH_BATCH_SIZE - 1)) / HASH_BATCH_SIZE;
   for (__uint128_t batch = 0; batch < totalBatches; batch++) {
     const __uint128_t batchCount =
@@ -500,16 +501,14 @@ static void computeHash160BatchBinSingle(int numKeys, uint8_t pubKeys[][33],
       }
     }
 
-    const uint8_t* inPtr[HASH_BATCH_SIZE];
-    uint8_t* outPtr[HASH_BATCH_SIZE];
+    const uint8_t* shaIn[HASH_BATCH_SIZE];
+    unsigned char* shaOut[HASH_BATCH_SIZE];
     for (int i = 0; i < HASH_BATCH_SIZE; i++) {
-      inPtr[i] = shaInputs[i].data();
-      outPtr[i] = shaOutputs[i].data();
+      shaIn[i] = shaInputs[i].data();
+      shaOut[i] = reinterpret_cast<unsigned char*>(shaOutputs[i].data());
     }
 
-    sha256avx2_8B(inPtr[0], inPtr[1], inPtr[2], inPtr[3], inPtr[4], inPtr[5], inPtr[6], inPtr[7],
-                  outPtr[0], outPtr[1], outPtr[2], outPtr[3], outPtr[4], outPtr[5], outPtr[6],
-                  outPtr[7]);
+    sha256_avx512_16way(shaIn, shaOut);
 
     for (__uint128_t i = 0; i < batchCount; i++) {
       prepareRipemdBlock(shaOutputs[i].data(), ripemdInputs[i].data());
@@ -523,16 +522,14 @@ static void computeHash160BatchBinSingle(int numKeys, uint8_t pubKeys[][33],
       }
     }
 
+    uint8_t* ripemdBlocks[HASH_BATCH_SIZE];
+    unsigned char* ripemdOut[HASH_BATCH_SIZE];
     for (int i = 0; i < HASH_BATCH_SIZE; i++) {
-      inPtr[i] = ripemdInputs[i].data();
-      outPtr[i] = ripemdOutputs[i].data();
+      ripemdBlocks[i] = ripemdInputs[i].data();
+      ripemdOut[i] = reinterpret_cast<unsigned char*>(ripemdOutputs[i].data());
     }
 
-    ripemd160avx2::ripemd160avx2_32(
-        (unsigned char*)inPtr[0], (unsigned char*)inPtr[1], (unsigned char*)inPtr[2],
-        (unsigned char*)inPtr[3], (unsigned char*)inPtr[4], (unsigned char*)inPtr[5],
-        (unsigned char*)inPtr[6], (unsigned char*)inPtr[7], outPtr[0], outPtr[1], outPtr[2],
-        outPtr[3], outPtr[4], outPtr[5], outPtr[6], outPtr[7]);
+    ripemd160_avx512::hash_32bytes_16way(ripemdBlocks, ripemdOut);
 
     for (__uint128_t i = 0; i < batchCount; i++) {
       std::memcpy(hashResults[batch * HASH_BATCH_SIZE + i], ripemdOutputs[i].data(), 20);
@@ -549,9 +546,9 @@ void worker(Secp256K1* secp, int bit_length, int flip_count, int threadId, AVXCo
   }
 
   const int fullBatchSize = 2 * POINTS_BATCH_SIZE;
-  alignas(32) uint8_t localPubKeys[HASH_BATCH_SIZE][33];
-  alignas(32) uint8_t localHashResults[HASH_BATCH_SIZE][20];
-  alignas(32) int pointIndices[HASH_BATCH_SIZE];
+  alignas(64) uint8_t localPubKeys[HASH_BATCH_SIZE][33];
+  alignas(64) uint8_t localHashResults[HASH_BATCH_SIZE][20];
+  alignas(64) int pointIndices[HASH_BATCH_SIZE];
 
   __m256i target16 =
       _mm256_loadu_si256(reinterpret_cast<const __m256i*>(TARGET_HASH160_RAW.data()));
@@ -827,7 +824,7 @@ int main(int argc, char* argv[]) {
   // INITIALIZE SMART LOGGER
   g_smart_logger = new SmartMutagenLogger("mutagen_analysis.log");
   g_smart_logger->logOperation("PROGRAM_START",
-                               "Mutagen AVX2 Puzzle Solver - Algorithm Analysis Mode");
+                               "Mutagen AVX-512 Puzzle Solver - Algorithm Analysis Mode");
 
   signal(SIGINT, signalHandler);
 
