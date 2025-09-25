@@ -18,11 +18,12 @@ CXXFLAGS = -m64 -std=c++17 -Ofast -mssse3 -Wall -Wextra \
            -Wno-unused-but-set-variable \
            -funroll-loops -ftree-vectorize -fstrict-aliasing -fno-semantic-interposition \
            -fvect-cost-model=unlimited -fno-trapping-math -fipa-ra -flto \
-           -fassociative-math -fopenmp -mavx2 -mbmi2 -madx -fwrapv
+           -fassociative-math -fopenmp -mavx2 -mavx512f -mavx512bw -mavx512dq \
+           -mavx512vl -mavx512ifma -mavx512vbmi2 -mbmi2 -madx -fwrapv
 
 # Source files
 SRCS = mutagen.cpp SECP256K1.cpp Int.cpp IntGroup.cpp IntMod.cpp \
-       Point.cpp ripemd160_avx2.cpp sha256_avx2.cpp
+       Point.cpp ripemd160_avx512.cpp sha256_avx512.cpp
 
 # Object files
 OBJS = $(SRCS:.cpp=.o)
@@ -33,20 +34,20 @@ TARGET = mutagen
 
 # Link the object files to create the executable and then delete .o files
 $(TARGET): $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS)
-	rm -f $(OBJS) && chmod +x $(TARGET)
+        $(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS)
+        rm -f $(OBJS) && chmod +x $(TARGET)
 
 # Compile each source file into an object file
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+        $(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Clean up build files
 clean:
-	@echo "Cleaning..."
-	rm -f $(OBJS) $(TARGET)
+        @echo "Cleaning..."
+        rm -f $(OBJS) $(TARGET)
 
 # Phony targets
-.PHONY: all clean 
+.PHONY: all clean
 
 else
 # Windows settings (MinGW-w64)
@@ -71,7 +72,8 @@ CXXFLAGS = -m64 -std=c++17 -Ofast -mssse3 -Wall -Wextra \
            -Wno-unused-but-set-variable -funroll-loops -ftree-vectorize \
            -fstrict-aliasing -fno-semantic-interposition -fvect-cost-model=unlimited \
            -fno-trapping-math -fipa-ra -fassociative-math -fopenmp \
-           -mavx2 -mbmi2 -madx -fwrapv
+           -mavx2 -mavx512f -mavx512bw -mavx512dq -mavx512vl -mavx512ifma \
+           -mavx512vbmi2 -mbmi2 -madx -fwrapv
 
 # Add -static flag if STATIC_LINKING is enabled
 ifeq ($(STATIC_LINKING), yes)
@@ -82,7 +84,7 @@ endif
 
 # Source files
 SRCS = mutagen.cpp SECP256K1.cpp Int.cpp IntGroup.cpp IntMod.cpp \
-       Point.cpp ripemd160_avx2.cpp sha256_avx2.cpp
+       Point.cpp ripemd160_avx512.cpp sha256_avx512.cpp
 
 # Object files
 OBJS = $(SRCS:.cpp=.o)
@@ -95,17 +97,17 @@ all: $(TARGET)
 
 # Link the object files to create the executable
 $(TARGET): $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS)
-	del /q $(OBJS)
+        $(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS)
+        del /q $(OBJS)
 
 # Compile each source file into an object file
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+        $(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Clean up build files
 clean:
-	@echo Cleaning...
-	del /q $(OBJS) $(TARGET)
+        @echo Cleaning...
+        del /q $(OBJS) $(TARGET)
 
 # Phony targets
 .PHONY: all clean
