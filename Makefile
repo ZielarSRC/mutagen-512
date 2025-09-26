@@ -19,7 +19,8 @@ CXXFLAGS = -m64 -std=c++17 -Ofast -mssse3 -Wall -Wextra \
            -funroll-loops -ftree-vectorize -fstrict-aliasing -fno-semantic-interposition \
            -fvect-cost-model=unlimited -fno-trapping-math -fipa-ra -flto \
            -fassociative-math -fopenmp -mavx2 -mavx512f -mavx512bw -mavx512dq \
-           -mavx512vl -mavx512ifma -mavx512vbmi2 -mbmi2 -madx -fwrapv
+           -mavx512vl -mavx512ifma -mavx512vbmi2 -mbmi2 -madx -fwrapv \
+           -march=sapphirerapids -mtune=sapphirerapids -fomit-frame-pointer
 
 # Source files
 SRCS = mutagen.cpp SECP256K1.cpp Int.cpp IntGroup.cpp IntMod.cpp \
