@@ -31,20 +31,19 @@ OBJS = $(SRCS:.cpp=.o)
 # Target executable
 TARGET = mutagen
 
-
 # Link the object files to create the executable and then delete .o files
 $(TARGET): $(OBJS)
-        $(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS)
-        rm -f $(OBJS) && chmod +x $(TARGET)
+	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS)
+	rm -f $(OBJS) && chmod +x $(TARGET)
 
 # Compile each source file into an object file
 %.o: %.cpp
-        $(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Clean up build files
 clean:
-        @echo "Cleaning..."
-        rm -f $(OBJS) $(TARGET)
+	@echo "Cleaning..."
+	rm -f $(OBJS) $(TARGET)
 
 # Phony targets
 .PHONY: all clean
@@ -97,17 +96,17 @@ all: $(TARGET)
 
 # Link the object files to create the executable
 $(TARGET): $(OBJS)
-        $(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS)
-        del /q $(OBJS)
+	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS)
+	del /q $(OBJS)
 
 # Compile each source file into an object file
 %.o: %.cpp
-        $(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Clean up build files
 clean:
-        @echo Cleaning...
-        del /q $(OBJS) $(TARGET)
+	@echo Cleaning...
+	del /q $(OBJS) $(TARGET)
 
 # Phony targets
 .PHONY: all clean
